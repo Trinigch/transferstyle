@@ -1,0 +1,365 @@
+# Style Transfer
+
+<img src="https://i0.wp.com/chelseatroy.com/wp-content/uploads/2018/12/neural_style_transfer.png?resize=768%2C311&ssl=1">
+
+La idea de este trabajo final es reproducir el siguiente paper:
+
+https://arxiv.org/pdf/1508.06576.pdf
+
+El objetivo es transferir el estilo de una imagen dada a otra imagen distinta. 
+
+Como hemos visto en clase, las primeras capas de una red convolucional se activan ante la presencia de ciertos patrones vinculados a detalles muy pequeños.
+
+A medida que avanzamos en las distintas capas de una red neuronal convolucional, los filtros se van activando a medida que detectan patrones de formas cada vez mas complejos.
+
+Lo que propone este paper es asignarle a la activación de las primeras capas de una red neuronal convolucional (por ejemplo VGG19) la definición del estilo y a la activación de las últimas capas de la red neuronal convolucional, la definición del contenido.
+
+La idea de este paper es, a partir de dos imágenes (una que aporte el estilo y otra que aporte el contenido) analizar cómo es la activación de las primeras capas para la imagen que aporta el estilo y cómo es la activación de las últimas capas de la red convolucional para la imagen que aporta el contenido. A partir de esto se intentará sintetizar una imagen que active los filtros de las primeras capas que se activaron con la imagen que aporta el estilo y los filtros de las últimas capas que se activaron con la imagen que aporta el contenido.
+
+A este procedimiento se lo denomina neural style transfer.
+
+# En este trabajo se deberá leer el paper mencionado y en base a ello, entender la implementación que se muestra a continuación y contestar preguntas sobre la misma.
+
+# Una metodología posible es hacer una lectura rápida del paper (aunque esto signifique no entender algunos detalles del mismo) y luego ir analizando el código y respondiendo las preguntas. A medida que se planteen las preguntas, volviendo a leer secciones específicas del paper terminará de entender los detalles que pudieran haber quedado pendientes.
+
+Lo primero que haremos es cargar dos imágenes, una que aporte el estilo y otra que aporte el contenido. A tal fin utilizaremos imágenes disponibles en la web.
+
+# importing Image class from PIL package  
+from PIL import Image  
+  
+# creating a object  
+
+
+
+from google.colab import drive
+drive.mount('/content/drive')
+
+# Imagen para estilo
+!wget https://upload.wikimedia.org/wikipedia/commons/5/52/La_noche_estrellada1.jpg
+
+# Imagen para contenido
+!wget https://upload.wikimedia.org/wikipedia/commons/thumb/f/f4/Neckarfront_T%C3%BCbingen_Mai_2017.jpg/775px-Neckarfront_T%C3%BCbingen_Mai_2017.jpg
+
+# Creamos el directorio para los archivos de salida
+!mkdir /content/output
+
+from keras.preprocessing.image import load_img, save_img, img_to_array
+import numpy as np
+from scipy.optimize import fmin_l_bfgs_b
+import time
+import argparse
+import scipy
+
+
+from keras.applications import vgg19
+from keras import backend as K
+from pathlib import Path
+
+# Definimos las imagenes que vamos a utilizar, y el directorio de salida
+
+base_image_path = Path("/content/content.jpg")
+style_reference_image_path = Path("/content/mariposa2.jpeg")
+result_prefix = Path("/content/output7")
+iterations = 200
+
+
+
+
+
+# 1) En base a lo visto en el paper ¿Qué significan los parámetros definidos en la siguiente celda?
+
+La transferencia de estilo consiste en generar una imagen con el mismo "contenido" que una imagen base, pero con el "estilo" de una imagen diferente.
+
+Esto se logra mediante la optimización de la función de pérdida  compuesta por: "pérdida de estilo" (loss style), "pérdida de contenido" (loss content) y "pérdida de variación total" (loss total variation).
+
+El paper define "loss function" como : 
+ Ltotal(p,a, x)= αLcontent(p, x) + βLstyle(a, x) donde la constante α es content_weight y β Style_weight y  loss = loss + total_variation_weight * total_variation_loss(target_image)
+
+Esto significa que son los pesos de cada contribucion de cada "Loss".
+
+Donde **Content_weight** es el peso de content_loss,
+**Style_weight** el de  style_loss, y por ultimo **total_variation_weight**  el peso de la variacion total de Loss "total_variation_loss", hiperparametro que se utiliza para minimizar el ruido.
+
+
+total_variation_weight = 1
+style_weight = 10
+content_weight = 1
+
+# Definimos el tamaño de las imágenes a utilizar
+width, height = load_img(base_image_path).size
+print(width, height)
+img_nrows = 400
+img_ncols = int(width * img_nrows / height)
+
+print(img_ncols)
+
+
+
+# 2) Explicar qué hace la siguiente celda. En especial las últimas dos líneas de la función antes del return. ¿Por qué?
+
+Ayuda: https://keras.io/applications/
+
+Respuesta:
+
+Es una función auxiliar para abrir, redimensionar y  **transformar las imágenes en tensores**.
+
+*img_to_array toma la informacion de la imagen y la separa en 3 canales 
+
+*expand_dims agrega una dimension al inicio en el eje 0 para almacenar la informacion del batch size.
+
+*preprocess_input normaliza  de 0 a 255.
+
+Por que se preparo la imagen para poder utilizarla en el entrenamiento
+
+def preprocess_image(image_path):
+    img = load_img(image_path, target_size=(img_nrows, img_ncols))
+    
+    img = img_to_array(img)
+    
+    img = np.expand_dims(img, axis=0)
+    img = vgg19.preprocess_input(img)
+    return img
+
+
+
+
+
+# 3) Habiendo comprendido lo que hace la celda anterior, explique de manera muy concisa qué hace la siguiente celda. ¿Qué relación tiene con la celda anterior?
+
+Respuesta: **transforma el tensor en una imagen**
+
+def deprocess_image(x):
+    x = x.reshape((img_nrows, img_ncols, 3))
+    # Remove zero-center by mean pixel
+    x[:, :, 0] += 103.939
+    x[:, :, 1] += 116.779
+    x[:, :, 2] += 123.68
+    # 'BGR'->'RGB'
+    x = x[:, :, ::-1]
+    x = np.clip(x, 0, 255).astype('uint8')
+    return x
+
+* reshape remueve la dimension que contiene la informacion del batchsize.
+
+* luego se agrega un valor promedio a cada canal, buscando regular la intensidad en cada canal de la imagen.
+
+* x = x[:, :, ::-1] el ancho y alto de la imagen no cambia mientras que invierte los canales.
+
+* para poder asignar el formato "uint8" utiliza
+clip para castear todos los valores mayores a 255  asignandoles ese valor a todos los que sean superiores mientras que en el extremo inferior todos valores inferiores a 0 quedan en 0. 
+
+Con este proceso se invierten los colores y se buscando conseguir un promedio de intensidad en cada canal.
+
+hace un promedio del color de cada pixcel al agregarle el valor constante a cada canal y dejar la informacion entre 0 y 255 que son los valores de normalizacion. 
+En sisntesis **procesa la informacion para formar la imagen nuevamente**.
+
+# get tensor representations of our images
+# K.variable convierte un numpy array en un tensor, para 
+base_image = K.variable(preprocess_image(base_image_path))
+style_reference_image = K.variable(preprocess_image(style_reference_image_path))
+
+combination_image = K.placeholder((1, img_nrows, img_ncols, 3))
+
+Aclaración:
+
+La siguiente celda sirve para procesar las tres imagenes (contenido, estilo y salida) en un solo batch.
+
+# combine the 3 images into a single Keras tensor
+input_tensor = K.concatenate([base_image,
+                              style_reference_image,
+                              combination_image], axis=0)
+
+# build the VGG19 network with our 3 images as input
+# the model will be loaded with pre-trained ImageNet weights
+model = vgg19.VGG19(input_tensor=input_tensor,
+                    weights='imagenet', include_top=False)
+print('Model loaded.')
+
+# get the symbolic outputs of each "key" layer (we gave them unique names).
+outputs_dict = dict([(layer.name, layer.output) for layer in model.layers])
+
+# 4) En la siguientes celdas:
+
+- ¿Qué es la matriz de Gram?¿Para qué se usa?
+- ¿Por qué se permutan las dimensiones de x?
+
+La matriz de gram es una matriz de carasteristicas (features) correlacionadas que se utiliza para obtener una síntesis de la textura de la imagen (style) que se desea transferir. Las coincidencias pueden cuantificarse utilizando la correlación espacial entre cada par de correlaciones de features maps, ya que las correlaciones son una medida de similitud entre dos o más cosas. 
+
+La matriz de Gram se puede usar para comparar la textura de dos imágenes y  mediante la función de pérdida para medir la similitud de textura. Esto se aplica tanto para la síntesis de textura como para la transferencia de estilo. 
+
+¿Por qué se permutan las dimensiones de x?
+
+Permuta para poder aplicar la transformacion.
+
+
+
+
+def gram_matrix(x):
+    features = K.batch_flatten(K.permute_dimensions(x, (2, 0, 1)))
+    gram = K.dot(features, K.transpose(features))
+    return gram
+
+# 5) Losses:
+
+Explicar qué mide cada una de las losses en las siguientes tres celdas.
+
+La función de pérdida tiene 3 componentes: "pérdida de estilo", "pérdida de contenido" y "pérdida de variación total":
+
+La pérdida de variación total impone una continuidad espacial local entre los píxeles de la imagen combinada, lo que le da coherencia visual en la imagen generada.
+
+La pérdida de estilo es donde se mantiene el aprendizaje, que se define utilizando una red neuronal convolucional. Precisamente, consiste en una suma de distancias L2 entre las matrices de Gram de las representaciones de la imagen base y la imagen de referencia de estilo, extraída de diferentes capas de una red. La idea general es capturar la información de color y textura a diferentes escalas espaciales 
+
+La pérdida de contenido es una distancia L2 entre las características de la imagen base  y las características de la imagen combinada, manteniendo la imagen generada lo suficientemente cerca de la original.
+
+
+
+def style_loss(style, combination):
+    assert K.ndim(style) == 3
+    assert K.ndim(combination) == 3
+    S = gram_matrix(style)
+    C = gram_matrix(combination)
+    channels = 3
+    size = img_nrows * img_ncols
+    return K.sum(K.square(S - C)) / (4.0 * (channels ** 2) * (size ** 2))
+
+def content_loss(base, combination):
+    return K.sum(K.square(combination - base))
+
+
+def total_variation_loss(x):
+    assert K.ndim(x) == 4
+    a = K.square(
+        x[:, :img_nrows - 1, :img_ncols - 1, :] - x[:, 1:, :img_ncols - 1, :])
+    b = K.square(
+        x[:, :img_nrows - 1, :img_ncols - 1, :] - x[:, :img_nrows - 1, 1:, :])
+    return K.sum(K.pow(a + b, 1.25))
+
+
+# Armamos la loss total
+loss = K.variable(0.0)
+layer_features = outputs_dict['block5_conv2']
+base_image_features = layer_features[0, :, :, :]
+combination_features = layer_features[2, :, :, :]
+loss = loss + content_weight * content_loss(base_image_features,
+                                            combination_features)
+
+feature_layers = ['block1_conv1', 'block2_conv1',
+                  'block3_conv1', 'block4_conv1',
+                  'block5_conv1']
+for layer_name in feature_layers:
+    layer_features = outputs_dict[layer_name]
+    style_reference_features = layer_features[1, :, :, :] 
+    combination_features = layer_features[2, :, :, :]
+    sl = style_loss(style_reference_features, combination_features)
+    loss = loss + (style_weight / len(feature_layers)) * sl
+loss = loss + total_variation_weight * total_variation_loss(combination_image)
+
+grads = K.gradients(loss, combination_image)
+
+outputs = [loss]
+if isinstance(grads, (list, tuple)):
+    outputs += grads
+else:
+    outputs.append(grads)
+
+f_outputs = K.function([combination_image], outputs)
+
+# 6) Explique el propósito de las siguientes tres celdas. ¿Qué hace la función fmin_l_bfgs_b? ¿En qué se diferencia con la implementación del paper? ¿Se puede utilizar alguna alternativa?
+
+Respuesta:
+
+Es un metodo de optimizacion donde se calcula la perdida (loss) y el gradiente. 
+
+Esta clase de Evaluador lo hace posible por calcular loss y gradients en un mismo paso mientras que los recupera a través de dos funciones separadas, "loss" y "grads". Esto se hace porque scipy.optimize requiere funciones separadas para pérdidas y gradientes, pero calcularlos por separado sería ineficiente.
+
+La funcion fmin_l_bfgs_b es un algoritmo de optimizacion de la familia de bfgs que utiliza una candidad de memoria limitada para realizar los calculos. 
+
+se puede utilizar otro optimizador como ser Adam.
+
+
+def eval_loss_and_grads(x):
+    x = x.reshape((1, img_nrows, img_ncols, 3))
+    outs = f_outputs([x])
+    loss_value = outs[0]
+    if len(outs[1:]) == 1:
+        grad_values = outs[1].flatten().astype('float64')
+    else:
+        grad_values = np.array(outs[1:]).flatten().astype('float64')
+    return loss_value, grad_values
+
+# this Evaluator class makes it possible
+# to compute loss and gradients in one pass
+# while retrieving them via two separate functions,
+# "loss" and "grads". This is done because scipy.optimize
+# requires separate functions for loss and gradients,
+# but computing them separately would be inefficient.
+
+class Evaluator(object):
+
+    def __init__(self):
+        self.loss_value = None
+        self.grads_values = None
+
+    def loss(self, x):
+        assert self.loss_value is None
+        loss_value, grad_values = eval_loss_and_grads(x)
+        self.loss_value = loss_value
+        self.grad_values = grad_values
+        return self.loss_value
+
+    def grads(self, x):
+        assert self.loss_value is not None
+        grad_values = np.copy(self.grad_values)
+        self.loss_value = None
+        self.grad_values = None
+        return grad_values
+
+# 7) Ejecute la siguiente celda y observe las imágenes de salida en cada iteración.
+
+evaluator = Evaluator()
+
+# run scipy-based optimization (L-BFGS) over the pixels of the generated image
+# so as to minimize the neural style loss
+x = preprocess_image(base_image_path)
+
+for i in range(iterations):
+    print('Start of iteration', i)
+    start_time = time.time()
+    x, min_val, info = fmin_l_bfgs_b(evaluator.loss, x.flatten(),
+                                     fprime=evaluator.grads, maxfun=20)
+    print('Current loss value:', min_val)
+    # save current generated image
+    img = deprocess_image(x.copy())
+    fname = result_prefix / ('output_at_iteration_%d.png' % i)
+    save_img(fname, img)
+    end_time = time.time()
+    print('Image saved as', fname)
+    print('Iteration %d completed in %ds' % (i, end_time - start_time))
+
+# 8) Generar imágenes para distintas combinaciones de pesos de las losses. Explicar las diferencias. (Adjuntar las imágenes generadas como archivos separados.)
+
+Respuesta:
+
+1-total_variation_weight = 0.1
+style_weight = 0.1
+content_weight = 10
+
+Se transfiere muy poco de la textura de la imagen que se eligio para styl. no se minimiza mucho el ruido.
+
+2-1-total_variation_weight = 1
+style_weight = 0.1
+content_weight = 10
+
+Se aumenta el parametro total_variation_weight, se mejora el ruido y aumenta la coherencia visual.
+
+3-total_variation_weight = 0.1
+style_weight = 10
+content_weight = 0.01
+
+Se transfiere la textura de la imagen style.
+
+4-total_variation_weight = 1
+style_weight = 10
+content_weight = 0.01
+Se puede visualizar mayor coherencia en la imagen formada con un estilo mas marcado.
+# 9) Cambiar las imágenes de contenido y estilo por unas elegidas por usted. Adjuntar el resultado.
